@@ -10,7 +10,7 @@ class ModelFactory():
         pass
 
     @staticmethod
-    def get_model(model_type, dataset, input_dimension=6, output_dimension=6, width=300):
+    def get_model(dataset, input_dimension=6, output_dimension=6, width=300):
 
         if dataset == "omniglot":
             channels = 256

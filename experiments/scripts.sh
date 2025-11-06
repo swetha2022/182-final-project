@@ -1,0 +1,1 @@
+python3 experiments/pretraining.py --gpus=1 --rank=0 --seed=42 --path="../datasets" --epoch=45 --dataset="omniglot" --lr=0.0001 --name="baseline" --save_interval=15
