@@ -64,7 +64,7 @@ def main(args):
         
         if "save_interval" in args_dict and args_dict["save_interval"] > 0:
             if (step + 1) % args_dict["save_interval"] == 0:
-                checkpoint_path = f"checkpoint_{step + 1}.pt"
+                checkpoint_path = f"checkpoints/{args_dict["name"]}_checkpoint_{step + 1}.pt"
                 torch.save(maml.state_dict(), checkpoint_path)
                 wandb.save(checkpoint_path)
                 print(f"Saved checkpoint at epoch {step + 1}")
