@@ -33,7 +33,7 @@ def main(args):
     gpu_to_use = rank % args_dict["gpus"]
     if torch.cuda.is_available():
         device = torch.device('cuda:' + str(gpu_to_use))
-        print("Using gpu : %s", 'cuda:' + str(gpu_to_use))
+        print(f"Using gpu: cuda:{gpu_to_use}")
     else:
         device = torch.device('cpu')
         print("Using cpu")
