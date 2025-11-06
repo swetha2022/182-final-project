@@ -30,7 +30,7 @@ def main(args):
         config=args_dict,
     )
 
-    gpu_to_use = rank % args_dict["gpus"]
+    gpu_to_use = args_dict["gpu"]
     if torch.cuda.is_available():
         device = torch.device('cuda:' + str(gpu_to_use))
         print(f"Using gpu: cuda:{gpu_to_use}")
@@ -38,19 +38,22 @@ def main(args):
         device = torch.device('cpu')
         print("Using cpu")
 
-    dataset = DatasetFactory.get_dataset(args_dict['dataset'], background=True, train=True, path=args_dict["path"], all=True)
-    iterator = torch.utils.data.DataLoader(dataset, batch_size=256, shuffle=True, num_workers=0)
+    train_dataset = DatasetFactory.get_dataset(args_dict['dataset'], background=True, train=True, path=args_dict["path"], all=True)
+    test_dataset = DatasetFactory.get_dataset(args_dict['dataset'], background=True, train=False, path=args_dict["path"], all=True)
+    
+    train_iterator = torch.utils.data.DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=1)
+    test_iterator = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=1)
 
     config = ModelFactory.get_model(args_dict["dataset"])
-    maml = Model(config).to(device)
-    opt = torch.optim.Adam(maml.parameters(), lr=args_dict["lr"])
+    model = Model(config).to(device)
+    opt = torch.optim.Adam(model.parameters(), lr=args_dict["lr"])
 
     for step in range(args_dict["epoch"]):
         correct = 0
-        for img, y in tqdm(iterator):
+        for img, y in tqdm(train_iterator):
             img = img.to(device)
             y = y.to(device)
-            pred = maml(img)
+            pred = model(img)
 
             opt.zero_grad()
             loss = F.cross_entropy(pred, y.long())
@@ -58,21 +61,40 @@ def main(args):
             opt.step()
             correct += (pred.argmax(1) == y).sum().float() / len(y)
 
-        accuracy = correct / len(iterator)
-        wandb_run.log({"accuracy": accuracy, "loss": loss.item()}, step=step)
-        print(f"Accuracy at epoch {step} = {accuracy}")
+        accuracy = correct / len(train_iterator)
+        wandb_run.log({"train/accuracy": accuracy, "train/loss": loss.item()}, step=step)
+        print(f"Train accuracy at epoch {step} = {accuracy}")
         
         if "save_interval" in args_dict and args_dict["save_interval"] > 0:
             if (step + 1) % args_dict["save_interval"] == 0:
                 checkpoint_path = f"checkpoints/{args_dict["name"]}_checkpoint_{step + 1}.pt"
-                torch.save(maml.state_dict(), checkpoint_path)
+                torch.save(model.state_dict(), checkpoint_path)
                 wandb.save(checkpoint_path)
                 print(f"Saved checkpoint at epoch {step + 1}")
+
+        if "eval_interval" in args_dict and args_dict["eval_interval"] > 0:
+            if (step + 1) % args_dict["eval_interval"] == 0:
+                model.eval()
+                test_correct = 0
+                test_total = 0
+                with torch.no_grad():
+                    for img, y in tqdm(test_iterator, desc="Evaluating"):
+                        img = img.to(device)
+                        y = y.to(device)
+                        pred = model(img)
+                        test_correct += (pred.argmax(1) == y).sum().item()
+                        test_total += len(y)
+                
+                test_accuracy = test_correct / test_total
+                wandb_run.log({"test/accuracy": test_accuracy}, step=step + 1)
+                print(f"Test accuracy at epoch {step + 1} = {test_accuracy}")
+                model.train()
+
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpus', type=int, help='number of gpus', default=1)
+    parser.add_argument('--gpu', type=int, help='gpu number to use', default=0)
     parser.add_argument('--rank', type=int, help='meta batch size, namely task num', default=0)
     parser.add_argument('--seed', nargs='+', help='Seed', default=[90], type=int)
     parser.add_argument('--path', help='path of the dataset', default="../")
@@ -81,6 +103,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr', nargs='+', type=float, help='learning rate', default=[0.0001])
     parser.add_argument('--name', help='name of experiment', default="baseline")
     parser.add_argument('--save_interval', type=int, help='save checkpoint every N epochs', default=0)
+    parser.add_argument('--eval_interval', type=int, help='evaluate on test set every N epochs', default=0)
     
     args = parser.parse_args()
     main(args)
