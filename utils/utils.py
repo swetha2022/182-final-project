@@ -1,5 +1,5 @@
 """
-Code lovingly adpated from https://github.com/khurramjaved96/mrcl/blob/master/utils/utils.py
+Code adpated from https://github.com/khurramjaved96/mrcl/blob/master/utils/utils.py
 For more information, see https://proceedings.neurips.cc/paper_files/paper/2019/file/f4dd765c12f2ef67f98f3558c282a9cd-Paper.pdf
 """
 

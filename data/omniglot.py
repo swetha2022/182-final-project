@@ -1,5 +1,5 @@
 """
-Code lovingly adapted from https://github.com/khurramjaved96/mrcl/blob/master/datasets/omniglot.py
+Code adapted from https://github.com/khurramjaved96/mrcl/blob/master/datasets/omniglot.py
 For more information, see https://proceedings.neurips.cc/paper_files/paper/2019/file/f4dd765c12f2ef67f98f3558c282a9cd-Paper.pdf
 """
 
@@ -149,10 +149,10 @@ class Omniglot(data.Dataset):
     def _get_target_folder(self):
         return 'images_background' if self.background else 'images_evaluation'
 
+    
 
-def main():
-    """Main function to load both Omniglot datasets"""
-    # Set up directories
+if __name__ == '__main__':
+    """Run this to create the dataset folder and load the Omniglot datasets"""
     project_root = Path(__file__).parent.parent
     datasets_root = project_root / 'datasets'
     datasets_root.mkdir(exist_ok=True)
@@ -176,6 +176,3 @@ def main():
         all=False
     )
     print(f"Evaluation dataset loaded: {len(evaluation_dataset)} images")
-
-if __name__ == '__main__':
-    main()
