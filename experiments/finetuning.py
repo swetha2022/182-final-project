@@ -9,6 +9,7 @@ from data.datasetfactory import DatasetFactory
 from models.model import Model
 from models.modelfactory import ModelFactory
 from utils.utils import get_run, set_seed
+from optimizers.adamwanchored import AdamWAnchored
 
 def load_model(args, config, device):
     net = Model(config).to(device)
@@ -26,7 +27,7 @@ def evaluate_model(model, test_iterator, device):
     test_correct = 0
     test_total = 0
     with torch.no_grad():
-        for img, y in tqdm(test_iterator, desc="Evaluating on Pretrained Dataset"):
+        for img, y in tqdm(test_iterator, desc="Evaluating"):
             img = img.to(device)
             y = y.to(device)
             pred = model(img)
@@ -72,9 +73,9 @@ def main(args):
     pretrain_test_iterator = torch.utils.data.DataLoader(pretrain_test_dataset, batch_size=1, shuffle=False, num_workers=1)
 
     config = ModelFactory.get_model(args_dict['dataset'], output_dimension=1000)
-    # model = load_model(args_dict, config, device)
-    model = Model(config).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=args_dict["lr"])
+    model = load_model(args_dict, config, device)
+    # opt = torch.optim.AdamW(model.parameters(), lr=args_dict["lr"], weight_decay=args_dict["weight_decay"])
+    opt = AdamWAnchored(model.parameters(), lr=args_dict["lr"], weight_decay=args_dict["weight_decay"])
 
     step = 0
     for epoch in range(args_dict["epoch"]):
@@ -91,10 +92,10 @@ def main(args):
             correct += (pred.argmax(1) == y).sum().float() / len(y)
             step += 1
 
-            # if epoch == 0:
-            #     pretrain_test_accuracy = evaluate_model(model, pretrain_test_iterator, device)
-            #     wandb_run.log({"test/pretrain_accuracy": pretrain_test_accuracy}, step=step)
-            #     print(f"Pretrain test accuracy at step {step} = {pretrain_test_accuracy}")
+            if epoch == 0:
+                pretrain_test_accuracy = evaluate_model(model, pretrain_test_iterator, device)
+                wandb_run.log({"test/pretrain_accuracy": pretrain_test_accuracy}, step=step)
+                print(f"Pretrain test accuracy at step {step} = {pretrain_test_accuracy}")
 
         accuracy = correct / len(train_iterator)
         wandb_run.log({"train/accuracy": accuracy, "train/loss": loss.item()}, step=step)
@@ -116,9 +117,9 @@ def main(args):
                 wandb_run.log({"test/accuracy": test_accuracy}, step=step)
                 print(f"Test accuracy at epoch {epoch + 1} = {test_accuracy}")
 
-                # pretrain_test_accuracy = evaluate_model(model, pretrain_test_iterator, device)
-                # wandb_run.log({"test/pretrain_accuracy": pretrain_test_accuracy}, step=step)
-                # print(f"Pretrain test accuracy at epoch {epoch + 1} = {pretrain_test_accuracy}")
+                pretrain_test_accuracy = evaluate_model(model, pretrain_test_iterator, device)
+                wandb_run.log({"test/pretrain_accuracy": pretrain_test_accuracy}, step=step)
+                print(f"Pretrain test accuracy at epoch {epoch + 1} = {pretrain_test_accuracy}")
 
 
 if __name__ == '__main__':
@@ -130,6 +131,7 @@ if __name__ == '__main__':
     parser.add_argument('--epoch', type=int, nargs='+', help='epoch number', default=[45])
     parser.add_argument('--dataset', help='name of dataset', default="omniglot")
     parser.add_argument('--lr', nargs='+', type=float, help='learning rate', default=[0.0001])
+    parser.add_argument('--weight_decay', nargs='+', type=float, help='weight decay', default=[0.01])
     parser.add_argument('--name', help='name of experiment', default="baseline")
     parser.add_argument('--save_interval', type=int, help='save checkpoint every N epochs', default=0)
     parser.add_argument('--eval_interval', type=int, help='evaluate on test set every N epochs', default=0)

@@ -51,7 +51,6 @@ class ModelFactory():
 
                 {"name": 'linear',
                  "config": {"out": 1000, "in": 9 * channels}}
-
             ]
 
         else:

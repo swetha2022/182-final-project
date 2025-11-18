@@ -36,15 +36,15 @@ def main(args):
         device = torch.device('cpu')
         print("Using cpu")
 
-    train_dataset = DatasetFactory.get_dataset(args_dict['dataset'], background=True, train=True, path=args_dict["path"], all=True)
-    test_dataset = DatasetFactory.get_dataset(args_dict['dataset'], background=True, train=False, path=args_dict["path"], all=True)
+    train_dataset = DatasetFactory.get_dataset(args_dict['dataset'], background=True, train=True, path=args_dict["path"], all=False)
+    test_dataset = DatasetFactory.get_dataset(args_dict['dataset'], background=True, train=False, path=args_dict["path"], all=False)
     
     train_iterator = torch.utils.data.DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=1)
     test_iterator = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=1)
 
     config = ModelFactory.get_model(args_dict["dataset"])
     model = Model(config).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=args_dict["lr"])
+    opt = torch.optim.AdamW(model.parameters(), lr=args_dict["lr"], weight_decay=args_dict["weight_decay"])
 
     step = 0
     for epoch in range(args_dict["epoch"]):
@@ -104,6 +104,7 @@ if __name__ == '__main__':
     parser.add_argument('--epoch', type=int, nargs='+', help='epoch number', default=[45])
     parser.add_argument('--dataset', help='name of dataset', default="omniglot")
     parser.add_argument('--lr', nargs='+', type=float, help='learning rate', default=[0.0001])
+    parser.add_argument('--weight_decay', nargs='+', type=float, help='weight decay', default=[0.01])
     parser.add_argument('--name', help='name of experiment', default="baseline")
     parser.add_argument('--save_interval', type=int, help='save checkpoint every N epochs', default=0)
     parser.add_argument('--eval_interval', type=int, help='evaluate on test set every N epochs', default=0)
