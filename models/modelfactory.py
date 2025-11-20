@@ -10,7 +10,7 @@ class ModelFactory():
         pass
 
     @staticmethod
-    def get_model(dataset, input_dimension=6, output_dimension=6, width=300):
+    def get_model(dataset):
 
         if dataset == "omniglot":
             channels = 256
@@ -50,7 +50,7 @@ class ModelFactory():
                 {"name": 'rep'},
 
                 {"name": 'linear',
-                 "config": {"out": 1000, "in": 9 * channels}}
+                 "config": {"out": 1623, "in": 9 * channels}}
             ]
 
         else:

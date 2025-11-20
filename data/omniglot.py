@@ -119,6 +119,8 @@ class Omniglot(data.Dataset):
 
         if self.target_transform:
             character_class = self.target_transform(character_class)
+        if not self.background:
+            character_class += 963 # Increase the class by the total number of classes in the background set
 
         return image, character_class
 
