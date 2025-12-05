@@ -25,7 +25,7 @@ python3 experiments/finetuning.py \
     --epoch=45 \
     --dataset="omniglot" \
     --lr=0.0001 \
-    --name="baseline-adam-full" \
+    --name="baseline-adam-with-pretrain" \
     --save_interval=15 \
     --eval_interval=5 \
     --gpu=4 \
@@ -37,15 +37,75 @@ python3 experiments/finetuning.py \
     --rank=0 \
     --seed=42 \
     --path="datasets" \
-    --epoch=45 \
+    --epoch=90 \
     --dataset="omniglot" \
     --lr=0.0001 \
     --name="baseline-adam-naive" \
     --save_interval=15 \
     --eval_interval=5 \
-    --gpu=4 \
+    --gpu=1 \
     --model_path="checkpoints/pretrain_omniglot/baseline-adamw-full/checkpoint_45.pt" \
     --optimizer="adamw"
+
+python3 experiments/finetuning.py \
+    --rank=0 \
+    --seed=42 \
+    --path="datasets" \
+    --epoch=90 \
+    --dataset="omniglot" \
+    --lr=0.0001 \
+    --name="baseline-adam-probe" \
+    --save_interval=15 \
+    --eval_interval=5 \
+    --gpu=4 \
+    --model_path="checkpoints/pretrain_omniglot/baseline-adamw-full/checkpoint_45.pt" \
+    --optimizer="adamw" \
+    --probe=True
+
+python3 experiments/finetuning.py \
+    --rank=0 \
+    --seed=42 \
+    --path="datasets" \
+    --epoch=90 \
+    --dataset="omniglot" \
+    --lr=0.0001 \
+    --name="baseline-sgd-probe" \
+    --save_interval=15 \
+    --eval_interval=5 \
+    --gpu=4 \
+    --model_path="checkpoints/pretrain_omniglot/baseline-adamw-full/checkpoint_45.pt" \
+    --optimizer="sgd" \
+    --probe=True
+
+python3 experiments/finetuning.py \
+    --rank=0 \
+    --seed=42 \
+    --path="datasets" \
+    --epoch=90 \
+    --dataset="omniglot" \
+    --lr=0.0001 \
+    --name="baseline-adam-base-probe" \
+    --save_interval=15 \
+    --eval_interval=5 \
+    --gpu=1 \
+    --model_path="checkpoints/pretrain_omniglot/baseline-adamw-full/checkpoint_45.pt" \
+    --optimizer="adamw" \
+    --base_probe=True
+
+python3 experiments/finetuning.py \
+    --rank=0 \
+    --seed=42 \
+    --path="datasets" \
+    --epoch=90 \
+    --dataset="omniglot" \
+    --lr=0.0001 \
+    --name="baseline-sgd-base-probe" \
+    --save_interval=15 \
+    --eval_interval=5 \
+    --gpu=1 \
+    --model_path="checkpoints/pretrain_omniglot/baseline-adamw-full/checkpoint_45.pt" \
+    --optimizer="sgd" \
+    --base_probe=True
 
 python3 experiments/finetuning.py --rank=0 --seed=42 --path="datasets" --epoch=45 --dataset="omniglot" --lr=0.0001 --name="baseline-adamwanchored" --save_interval=15 --eval_interval=5 --gpu=1 --model_path="checkpoints/pretrain_omniglot/baseline-adamw/checkpoint_45.pt"
 python3 experiments/finetuning.py --rank=0 --seed=42 --path="datasets" --epoch=45 --dataset="omniglot" --lr=0.0001 --name="baseline-adamwanchored-with-pretrain" --save_interval=15 --eval_interval=5 --gpu=4 --pretrain_ratio=0.1 --model_path="checkpoints/pretrain_omniglot/baseline-adamw/checkpoint_45.pt"

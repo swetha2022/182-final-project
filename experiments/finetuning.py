@@ -6,11 +6,12 @@ from tqdm import tqdm
 from torch.nn import functional as F
 
 from data.datasetfactory import DatasetFactory
-from models.model import Model
+from torchvision import models
 from models.modelfactory import ModelFactory
 from utils.utils import get_run, set_seed
-from utils.experiment_utils import load_model, evaluate_model, evaluate_one_shot
+from utils.experiment_utils import load_model, evaluate_model, pretraining_injected_dataloader, compute_parameter_norm
 from optimizers.adamwanchored import AdamWAnchored
+from optimizers.muon import MuonOptimizerWrapper
 
 
 def main(args):
@@ -28,7 +29,9 @@ def main(args):
         entity="182-research-project",
         project="omniglot-finetuning",
         name=args_dict["name"],
+        group=f"{args_dict['name']}-group",
         config=args_dict,
+        save_code=True,
     )
 
     gpu_to_use = args_dict["gpu"]
@@ -39,47 +42,110 @@ def main(args):
         device = torch.device('cpu')
         print("Using CPU")
 
-    train_dataset = DatasetFactory.get_dataset(args_dict['dataset'], train=True, background=False, path=args_dict['path'])
-    test_dataset = DatasetFactory.get_dataset(args_dict['dataset'], train=False, background=False, path=args_dict['path'])
-
-    pretrain_train_dataset = DatasetFactory.get_dataset(args_dict['dataset'], train=True, background=True, path=args_dict['path'])
-    pretrain_test_dataset = DatasetFactory.get_dataset(args_dict['dataset'], train=False, background=True, path=args_dict['path'])
+    increase_channels = args_dict["model_type"] == "alexnet"
+    finetune_train_dataset = DatasetFactory.get_dataset(
+        args_dict['dataset'], 
+        train=True, 
+        background=False, 
+        increase_channels=increase_channels, 
+        path=args_dict['path']
+    )
+    finetune_test_dataset = DatasetFactory.get_dataset(
+        args_dict['dataset'], 
+        train=False, 
+        background=False, 
+        increase_channels=increase_channels, 
+        path=args_dict['path']
+    )
+    pretrain_train_dataset = DatasetFactory.get_dataset(
+        args_dict['dataset'], 
+        train=True, 
+        background=True, 
+        increase_channels=increase_channels, 
+        path=args_dict['path']
+    )
+    pretrain_test_dataset = DatasetFactory.get_dataset(
+        args_dict['dataset'], 
+        train=False, 
+        background=True, 
+        increase_channels=increase_channels, 
+        path=args_dict['path']
+    )
 
     if args_dict["pretrain_ratio"] > 0:
-        ratio = args_dict["pretrain_ratio"]
-        with_pretrain_dataset = torch.utils.data.ConcatDataset([train_dataset, pretrain_train_dataset])
-        weights = (
-            [(1 - ratio) / len(train_dataset)] * len(train_dataset)
-            + [ratio / len(pretrain_train_dataset)] * len(pretrain_train_dataset)
+        train_iterator = pretraining_injected_dataloader(
+            args_dict["pretrain_ratio"], 
+            finetune_train_dataset, 
+            pretrain_train_dataset, 
+            batch_size=256
         )
-        sampler = torch.utils.data.WeightedRandomSampler(weights, num_samples=len(with_pretrain_dataset), replacement=True)
-        train_iterator = torch.utils.data.DataLoader(with_pretrain_dataset, batch_size=256, sampler=sampler, num_workers=1)
     else:
-        train_iterator = torch.utils.data.DataLoader(train_dataset, batch_size=256, shuffle=True, num_workers=1)
+        train_iterator = torch.utils.data.DataLoader(
+            finetune_train_dataset, 
+            batch_size=256, 
+            shuffle=True, 
+            num_workers=1
+        )
 
-    test_iterator = torch.utils.data.DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=False, num_workers=1)
-    pretrain_test_iterator = torch.utils.data.DataLoader(pretrain_test_dataset, batch_size=len(pretrain_test_dataset), shuffle=False, num_workers=1)
+    test_iterator = torch.utils.data.DataLoader(
+        finetune_test_dataset, 
+        batch_size=len(finetune_test_dataset), 
+        shuffle=False, 
+        num_workers=1
+    )
+    pretrain_test_iterator = torch.utils.data.DataLoader(
+        pretrain_test_dataset, 
+        batch_size=len(pretrain_test_dataset), 
+        shuffle=False, 
+        num_workers=1
+    )
 
-    config = ModelFactory.get_model(args_dict['dataset'])
-    if not args_dict["scratch"]:
+
+    if args_dict["model_type"] == "baseline":
+        config = ModelFactory.get_model(args_dict["dataset"])
         model = load_model(args_dict["model_path"], config, device) 
-    else:
-        model = Model(config).to(device)
-    if args_dict["optimizer"] == "adamw" and args_dict["scratch"]:
+    elif args_dict["model_type"] == "alexnet":
+        num_classes_finetune = 1623
+        model = models.alexnet(weights=None).to(device)
+        state = torch.load(args_dict["model_path"], map_location=device)
+        # Load all layers except the classifier (which has different size)
+        state_to_load = {k: v for k, v in state.items() if k != 'classifier.6.weight' and k != 'classifier.6.bias'}
+        model.load_state_dict(state_to_load, strict=False)
+        # Copy classifier weights where they overlap (first 1000 classes)
+        num_classes_pretrained = state['classifier.6.weight'].shape[0]
+        in_features = model.classifier[6].in_features
+        model.classifier[6] = torch.nn.Linear(in_features, num_classes_finetune).to(device)
+        model.classifier[6].weight.data[:num_classes_pretrained] = state['classifier.6.weight']
+        model.classifier[6].bias.data[:num_classes_pretrained] = state['classifier.6.bias']
+
+
+    if args_dict["optimizer"] == "adam":
         opt = torch.optim.AdamW(model.parameters(), lr=args_dict["lr"], weight_decay=args_dict["weight_decay"])
-    elif args_dict["optimizer"] == "adamw" and not args_dict["scratch"]:
-        opt = torch.optim.Adam(model.parameters(), lr=args_dict["lr"])
     elif args_dict["optimizer"] == "sgd":
         opt = torch.optim.SGD(model.parameters(), lr=args_dict["lr"], weight_decay=args_dict["weight_decay"], momentum=args_dict["momentum"])
+    elif args_dict["optimizer"] == "muon":
+        opt = MuonOptimizerWrapper(model.parameters(), lr=args_dict["lr"], weight_decay=args_dict["weight_decay"])
     else:
         raise ValueError("Invalid optimizer name!")
     
     step = 0
     for epoch in range(args_dict["epoch"]):
         if epoch == 0:
+            param_l2_norm = compute_parameter_norm(model, "2")
+            param_rms_norm = compute_parameter_norm(model, "rms")
+            param_linf_norm = compute_parameter_norm(model, "inf")
             pretrain_test_accuracy = evaluate_model(model, pretrain_test_iterator, device)
-            wandb_run.log({"test/pretrain_accuracy": pretrain_test_accuracy}, step=step)
-            print(f"Pretrain test accuracy at epoch {epoch + 1} = {pretrain_test_accuracy}")
+            wandb_run.log({
+                "test/pretrain_accuracy": pretrain_test_accuracy, 
+                "model/param_l2_norm": param_l2_norm.item(),
+                "model/param_rms_norm": param_rms_norm.item(),
+                "model/param_linf_norm": param_linf_norm.item()
+            }, step=step)
+            print(f"Pretrain test accuracy before epoch {epoch} = {pretrain_test_accuracy}")
+            print(f"Parameter l2 norm before epoch {epoch} = {param_l2_norm.item()}")
+            print(f"Parameter rms norm before epoch {epoch} = {param_rms_norm.item()}")
+            print(f"Parameter linf norm before epoch {epoch} = {param_linf_norm.item()}")
+            
         correct = 0
         for img, y in tqdm(train_iterator):
             img = img.to(device)
@@ -91,19 +157,32 @@ def main(args):
             opt.step()
             correct += (pred.argmax(1) == y).sum().float() / len(y)
             step += 1
-
         accuracy = correct / len(train_iterator)
-        wandb_run.log({"train/accuracy": accuracy, "train/loss": loss.item()}, step=step)
+
+        # Compute and log parameter norm
+        param_l2_norm = compute_parameter_norm(model, "2")
+        param_rms_norm = compute_parameter_norm(model, "rms")
+        param_linf_norm = compute_parameter_norm(model, "inf")
+        wandb_run.log({
+            "train/accuracy": accuracy, 
+            "train/loss": loss.item(), 
+            "train/epoch": epoch,
+            "model/param_l2_norm": param_l2_norm.item(),
+            "model/param_rms_norm": param_rms_norm.item(),
+            "model/param_linf_norm": param_linf_norm.item()
+        }, step=step)
         print(f"Train accuracy at epoch {epoch} = {accuracy}")
+        print(f"Parameter l2 norm at epoch {epoch} = {param_l2_norm.item()}")
+        print(f"Parameter rms norm at epoch {epoch} = {param_rms_norm.item()}")
+        print(f"Parameter linf norm at epoch {epoch} = {param_linf_norm.item()}")
         
         if "save_interval" in args_dict and args_dict["save_interval"] > 0:
             if (epoch + 1) % args_dict["save_interval"] == 0:
-                checkpoint_folder = f"checkpoints/finetune_{args_dict["dataset"]}/{args_dict["name"]}/"
+                checkpoint_folder = f"checkpoints/finetune_{args_dict['dataset']}/{args_dict['checkpoint_folder']}/"
                 os.makedirs(checkpoint_folder, exist_ok=True)
 
                 checkpoint_path = checkpoint_folder + f"checkpoint_{epoch + 1}.pt"
                 torch.save(model.state_dict(), checkpoint_path)
-                wandb.save(checkpoint_path)
                 print(f"Saved checkpoint at epoch {epoch + 1}")
 
         if "eval_interval" in args_dict and args_dict["eval_interval"] > 0:
@@ -131,9 +210,9 @@ if __name__ == '__main__':
     parser.add_argument('--name', help='name of experiment', default="baseline")
     parser.add_argument('--save_interval', type=int, help='save checkpoint every N epochs', default=0)
     parser.add_argument('--eval_interval', type=int, help='evaluate on test set every N epochs', default=0)
+    parser.add_argument('--model_type', type=str, help='type of model', default="baseline")
     parser.add_argument('--model_path', type=str, help='model path', default=None)
-    parser.add_argument('--num_tests', type=int, help='number of one-shot tests to do each eval', default=30)
-    parser.add_argument('--scratch', type=bool, help='boolean to run model from scratch', default=False)
+    parser.add_argument('--checkpoint_folder', type=str, help='name of checkpoint folder', default="baseline")
     parser.add_argument('--optimizer', type=str, help='optimizer name', default="adamw")
     
     args = parser.parse_args()

@@ -16,7 +16,7 @@ def load_model(model_path, config, device):
         net.load_state_dict(state_dict)
     return net
 
-def evaluate_model(model, test_iterator, device):
+def evaluate_model(model, test_iterator, device, base_model=None):
     model.eval()
     test_correct = 0
     test_total = 0
@@ -24,7 +24,11 @@ def evaluate_model(model, test_iterator, device):
         for img, y in tqdm(test_iterator, desc="Evaluating"):
             img = img.to(device)
             y = y.to(device)
-            pred = model(img)
+            if base_model:
+                features = base_model(img, rep=True)
+                pred = model(features)
+            else:
+                pred = model(img)
             test_correct += (pred.argmax(1) == y).sum().item()
             test_total += len(y)
     
@@ -96,3 +100,76 @@ def evaluate_one_shot(model, test_iterator, device, num_tests):
     one_shot_accuracy = test_correct / test_total if test_total > 0 else 0.0
     model.train()
     return one_shot_accuracy
+
+def compute_parameter_norm(model, norm_type='2'):
+    """
+    Compute the norm of all model parameters by calculating the norm of each
+    parameter separately and averaging them.
+    
+    Args:
+        model: PyTorch model
+        norm_type: Type of norm to compute. Options: 
+                   '2' or 'l2' (L2 norm), 
+                   'inf' or 'infinity' (infinity norm), 
+                   '1' or 'l1' (L1 norm),
+                   'fro' (Frobenius norm for matrices),
+                   'rms' (RMS norm: sqrt(mean(x^2)) for vectors, 
+                          RMS->RMS induced norm (spectral norm) for matrices)
+    
+    Returns:
+        Scalar tensor with the averaged norm value
+    """
+    norm_type_lower = norm_type.lower()
+    parameter_norms = []
+    
+    for param in model.parameters():
+        if param.numel() == 0:  # Skip empty parameters
+            continue
+            
+        # Determine if parameter is a matrix (2D or higher) or vector (1D)
+        is_matrix = param.dim() >= 2
+        
+        if norm_type_lower == 'rms':
+            if is_matrix:
+                if param.dim() > 2:
+                    param_2d = param.view(-1, param.shape[-1])
+                    param_norm = torch.linalg.matrix_norm(param_2d, ord=2)
+                    param_norm = param_norm * np.sqrt(param.shape[-2] / param.shape[-1])
+                else:
+                    param_norm = torch.linalg.matrix_norm(param, ord=2)
+                    param_norm = param_norm * np.sqrt(param.shape[0] / param.shape[1])
+            else:
+                param_norm = torch.norm(param, p=2)
+                param_norm = param_norm * np.sqrt(1.0 / param.shape[0])
+        elif norm_type_lower in ['2', 'l2']:
+            param_norm = torch.norm(param, p=2)
+        elif norm_type_lower in ['inf', 'infinity']:
+            param_norm = torch.norm(param, p=float('inf'))
+        else:
+            # Default to L2 norm
+            param_norm = torch.norm(param, p=2)
+        
+        # Ensure param_norm is a scalar (0-dimensional tensor)
+        # Convert to Python float first to ensure it's truly a scalar
+        if param_norm.dim() > 0 or param_norm.numel() > 1:
+            param_norm = param_norm.flatten()[0]
+        # Convert to float and back to tensor to ensure it's a scalar
+        param_norm_value = param_norm.item() if isinstance(param_norm, torch.Tensor) else float(param_norm)
+        param_norm = torch.tensor(param_norm_value, device=param.device)
+        
+        parameter_norms.append(param_norm)
+    
+    if len(parameter_norms) == 0:
+        return torch.tensor(0.0)
+    
+    # Average all parameter norms
+    return torch.stack(parameter_norms).mean()
+
+def pretraining_injected_dataloader(pretrain_ratio, finetune_dataset, pretrain_dataset, batch_size=256):
+    with_pretrain_dataset = torch.utils.data.ConcatDataset([finetune_dataset, pretrain_dataset])
+    weights = (
+        [(1 - pretrain_ratio) / len(finetune_dataset)] * len(finetune_dataset)
+        + [pretrain_ratio / len(pretrain_dataset)] * len(pretrain_dataset)
+    )
+    sampler = torch.utils.data.WeightedRandomSampler(weights, num_samples=len(with_pretrain_dataset), replacement=True)
+    return torch.utils.data.DataLoader(with_pretrain_dataset, batch_size=batch_size, sampler=sampler, num_workers=1)
