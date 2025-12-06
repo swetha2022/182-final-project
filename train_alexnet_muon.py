@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-import torchvision.models as models
+from torchvision.models.vision_transformer import vit_b_16
 from torch.utils.data import DataLoader
 import wandb
 from tqdm import tqdm
@@ -68,12 +68,12 @@ class Muon(torch.optim.Optimizer):
                 p.data.add_(update_matrix, alpha=-lr)
 
 class Config:
-    data_root = "/home/celinet/AlexNet-PyTorch/data/ImageNet_1K"
+    data_root = "/home/swetha/vision_transformer/data/ImageNet_1K"
     train_dir = "ILSVRC2012_img_train"
     val_dir = "ILSVRC2012_img_val"
     num_classes = 1000
     
-    exp_name = "alexnet_muon_fixed"
+    exp_name = "vision_transformer_muon_fixed"
     batch_size = 128 
     
     muon_lr = 0.005        
@@ -93,7 +93,7 @@ def main():
     
     wandb.init(
         entity="182-research-project",
-        project="alexnet",
+        project="vision_transformer",
         name=config.exp_name,
         config=wandb_config
     )
@@ -143,7 +143,8 @@ def main():
         pin_memory=True
     )
 
-    model = models.alexnet(weights=None, num_classes=config.num_classes)
+    model = vit_b_16(weights=None, num_classes=config.num_classes)
+
     model = model.to(device)
     wandb.watch(model, log="all")
 
@@ -154,7 +155,7 @@ def main():
     
     for name, p in model.named_parameters():
         if p.requires_grad:
-            if p.ndim > 1 and "classifier" in name: 
+            if p.ndim > 1 and "heads" in name:
                 muon_params.append(p)
             else:
                 adam_params.append(p)
@@ -209,7 +210,7 @@ def main():
         print(f"Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.2f}% | Val Acc@5:   {val_acc_top5:.2f}%")
 
         if (epoch + 1) % 10 == 0:
-            checkpoint_path = os.path.join(config.save_dir, f"alexnet_muon_epoch_{epoch+1}.pth")
+            checkpoint_path = os.path.join(config.save_dir, f"vision_transformer_muon_epoch_{epoch+1}.pth")
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
