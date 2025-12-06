@@ -414,11 +414,11 @@ def aggregate_and_plot(results, args):
 # ----------------------------
 def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune ViT on MNIST, evaluate ImageNet pre/post, aggregate over seeds")
-    parser.add_argument("--imagenet-root", type=str, default="/home/swetha/vision_transformer/data/ImageNet_1K", help="Root folder for ImageNet data (if doing ImageNet eval).")
+    parser.add_argument("--imagenet-root", type=str, default="/raid/users/celinet/data", help="Root folder for ImageNet data (if doing ImageNet eval).")
     parser.add_argument("--imagenet-val-dir", type=str, default="ILSVRC2012_img_val", help="ImageNet validation dir name inside imagenet-root.")
     parser.add_argument("--no-imagenet-eval", action="store_true", help="If set, skip ImageNet pre/post evaluation.")
     parser.add_argument("--imagenet-limit-batches", type=int, default=None, help="If set, limit ImageNet eval to N batches (for quick runs).")
-    parser.add_argument("--mnist-root", type=str, default="./data", help="MNIST root dir")
+    parser.add_argument("--mnist-root", type=str, default="/raid/users/celinet/data", help="MNIST root dir")
     parser.add_argument("--seeds", nargs="+", type=int, default=[42, 1337, 7], help="Random seeds to run (space-separated)")
     parser.add_argument("--epochs", type=int, default=10, help="Fine-tune epochs")
     parser.add_argument("--batch-size", type=int, default=128, help="Batch size")
