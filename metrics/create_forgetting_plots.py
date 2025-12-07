@@ -2,6 +2,7 @@ import csv
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
+from matplotlib.ticker import PercentFormatter
 
 def read_csv_to_dict(filename):
     data = []
@@ -57,9 +58,9 @@ def create_forgetting_graph(pretrain_opt):
     if pretrain_opt == "muon":
         preratio_05_keys = [keys[0], keys[3]]
         preratio_01_keys = [keys[1], keys[4]]
-        preratio_00_keys = [keys[2], keys[5]]
-        graphs = [preratio_05_keys, preratio_01_keys, preratio_00_keys]
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        # preratio_00_keys = [keys[2], keys[5]]
+        graphs = [preratio_05_keys, preratio_01_keys] # , preratio_00_keys]
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     elif pretrain_opt == "adam":
         preratio_05_keys = [keys[2], keys[0]]
         preratio_01_keys = [keys[3], keys[1],]
@@ -72,7 +73,7 @@ def create_forgetting_graph(pretrain_opt):
     if pretrain_opt == "adam":
         right_margin = 0.78  # More space for legend with 2 subplots
     else:
-        right_margin = 0.85  # Less space needed with 3 subplots
+        right_margin = 0.78  # Less space needed with 3 subplots
     fig.subplots_adjust(wspace=0.4, top=0.92, right=right_margin)
     bar_colors = ['#1f77b4', '#ff7f0e']
     
@@ -106,9 +107,11 @@ def create_forgetting_graph(pretrain_opt):
         ax.grid(True, axis='y', linestyle='--', alpha=0.7)
         # Remove x-axis labels
         ax.set_xticklabels([])
+        # Format y-axis as percentages
+        ax.yaxis.set_major_formatter(PercentFormatter(1.0))
     
     axes[0].set_ylabel(r"$F_{\text{pre,post}} = A_{\text{pre,pre}} - A_{\text{pre,post}}$", fontsize=12)
-    fig.suptitle(f"Catastrophic Forgetting With {pretrain_opt.capitalize()} Pretraining - Lower is Better", fontsize=14, y=1.0)
+    fig.suptitle(f"Catastrophic Forgetting - {pretrain_opt.capitalize()} Pretraining", fontsize=14, y=1.0)
     
     # Create legend handles
     legend_elements = [
@@ -119,7 +122,7 @@ def create_forgetting_graph(pretrain_opt):
     if pretrain_opt == "adam":
         legend_anchor = (0.97, 0.5)  # Further left to avoid overlap
     else:
-        legend_anchor = (0.99, 0.5)  # Original position for muon
+        legend_anchor = (0.97, 0.5)  # Original position for muon
     fig.legend(handles=legend_elements, loc='center right', bbox_to_anchor=legend_anchor)
     
     plt.savefig(f"metrics/plots/forgetting_{pretrain_opt}.png", bbox_inches='tight')
