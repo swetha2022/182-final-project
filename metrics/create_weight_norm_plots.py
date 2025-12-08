@@ -22,7 +22,7 @@ def extract_learning_rate(column_name):
         return float(match.group(1))
     return None
 
-def plot_single_norm(ax, norm_type, pretrain_opt, pretrain_ratio=None, plot_derivative=False, normalize_by_lr=False):
+def plot_single_norm(ax, norm_type, pretrain_opt, pretrain_ratio=None, plot_derivative=False, normalize_by_lr=False, setup_axes=True):
     """
     Plot a single norm type on the given axes.
     
@@ -33,6 +33,7 @@ def plot_single_norm(ax, norm_type, pretrain_opt, pretrain_ratio=None, plot_deri
         pretrain_ratio: pretrain ratio as string (e.g., "0.05", "0.01", "0.00") to plot both muon and adam finetuning (optional)
         plot_derivative: if True, plot the derivative of the norm instead of the norm itself
         normalize_by_lr: if True and plot_derivative is True, normalize the derivative by the learning rate
+        setup_axes: if True, set up axes labels, titles, grid, and annotations (default True)
     """
     # Determine the CSV file based on norm_type
     if norm_type == "inf":
@@ -288,82 +289,187 @@ def plot_single_norm(ax, norm_type, pretrain_opt, pretrain_ratio=None, plot_deri
         ax.fill_between(adam_epochs_adj, adam_mins_connected, adam_maxs_connected, 
                        alpha=0.2, color='#ff7f0e')
     
-    # Add vertical dashed line at epoch 90 if finetuning data exists
-    if pretrain_ratio is not None:
+    # Add vertical dashed line at epoch 90 if finetuning data exists (only once)
+    if pretrain_ratio is not None and setup_axes:
         ylim = ax.get_ylim()
         ax.axvline(x=90, color='black', linestyle='--', linewidth=1.5, alpha=0.7, zorder=0)
         ax.set_ylim(ylim)  # Restore ylim after axvline
     
-    # Set labels and title
+    # Set labels and title (only if setup_axes is True)
+    if setup_axes:
+        if plot_derivative:
+            if normalize_by_lr:
+                if norm_type == "inf":
+                    ax.set_ylabel(r'$\|\Delta\theta\|_{\infty} / \eta$', fontsize=14)
+                    ax.set_title(r'$\|\Delta\theta\|_{\infty} / \eta$ Over Training', fontsize=14)
+                else:
+                    ax.set_ylabel(r'$\|\Delta\theta\|_{RMS\rightarrow RMS} / \eta$', fontsize=14)
+                    ax.set_title(r'$\|\Delta\theta\|_{RMS\rightarrow RMS} / \eta$ Over Training', fontsize=14)
+            else:
+                if norm_type == "inf":
+                    ax.set_ylabel(r'$\|\Delta\theta\|_{\infty}$', fontsize=14)
+                    ax.set_title(r'$\|\Delta\theta\|_{\infty}$ Over Training', fontsize=14)
+                else:
+                    ax.set_ylabel(r'$\|\Delta\theta\|_{RMS\rightarrow RMS}$', fontsize=14)
+                    ax.set_title(r'$\|\Delta\theta\|_{RMS\rightarrow RMS}$ Over Training', fontsize=14)
+        else:
+            if norm_type == "inf":
+                ax.set_ylabel(r'$\|\theta\|_{\infty}$', fontsize=14)
+                ax.set_title(r'$\|\theta\|_{\infty}$ Over Training', fontsize=14)
+            else:
+                ax.set_ylabel(r'$\|\theta\|_{RMS\rightarrow RMS}$', fontsize=14)
+                ax.set_title(r'$\|\theta\|_{RMS\rightarrow RMS}$ Over Training', fontsize=14)
+
+        # Set up custom x-axis with "Pretraining" and "Finetuning" labels
+        if pretrain_ratio is not None:
+            # Get the current x-axis limits and find max data point
+            xlim = ax.get_xlim()
+            # Find max data point from all plotted lines
+            max_data_x = 0
+            for line in ax.lines:
+                xdata = line.get_xdata()
+                if len(xdata) > 0:
+                    max_data_x = max(max_data_x, max(xdata))
+            max_x = max(xlim[1], max_data_x)
+            
+            # Create custom ticks and labels
+            # Pretraining section: 0, 15, 30, 45, 60, 75, 90
+            # Finetuning section: 90, 105, 120, 135, 150, 165, 180 (but labeled as 0-90)
+            pretrain_ticks = [0, 15, 30, 45, 60, 75, 90]
+            finetune_ticks = [90, 105, 120, 135, 150, 165, 180]
+            
+            # Only show ticks that are within the actual data range
+            all_ticks = []
+            all_labels = []
+            
+            for tick in pretrain_ticks:
+                if tick <= max_x:
+                    all_ticks.append(tick)
+                    all_labels.append(str(tick))
+            
+            for tick in finetune_ticks:
+                if tick <= max_x:
+                    all_ticks.append(tick)
+                    # Label finetuning ticks as 0-90
+                    finetune_label = tick - 90
+                    all_labels.append(str(finetune_label))
+            
+            ax.set_xticks(all_ticks)
+            ax.set_xticklabels(all_labels)
+            
+            # Add section labels below the x-axis
+            ax.text(45, ax.get_ylim()[0] - (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.08, 
+                   'Pretraining', ha='center', va='top', fontsize=11, fontweight='bold')
+            if max_x > 90:
+                finetune_center = 90 + (min(max_x, 180) - 90) / 2
+                ax.text(finetune_center, ax.get_ylim()[0] - (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.08, 
+                       'Finetuning', ha='center', va='top', fontsize=11, fontweight='bold')
+            
+            ax.set_xlabel('Epoch', fontsize=12)
+        else:
+            ax.set_xlabel('Epoch', fontsize=12)
+        
+        # Add grid
+        ax.grid(True, linestyle='--', alpha=0.7)
+        ax.set_axisbelow(True)
+        
+        # Add learning rate annotations
+        # Check if this is a combined plot by looking at existing lines
+        existing_labels = [line.get_label() for line in ax.lines if line.get_label() != '_nolegend_']
+        is_combined = len([l for l in existing_labels if 'Training' in l]) >= 2
+        
+        if is_combined and setup_axes:
+            # Combined plot: show both pretrain LRs
+            lr_text = "Pretrain LRs: Muon 5.00e-04, Adam 5.00e-05"
+            if pretrain_ratio is not None and muon_finetune_lr is not None and adam_finetune_lr is not None:
+                lr_text += f"\nFinetune LRs: Muon {muon_finetune_lr:.2e}, Adam {adam_finetune_lr:.2e}"
+        else:
+            # Single optimizer plot
+            lr_text = f"Pretrain LR: {pretrain_lr:.2e}"
+            if pretrain_ratio is not None and muon_finetune_lr is not None and adam_finetune_lr is not None:
+                lr_text += f"\nMuon Finetune LR: {muon_finetune_lr:.2e}"
+                lr_text += f"\nAdam Finetune LR: {adam_finetune_lr:.2e}"
+        
+        # Add text in top center
+        ax.text(0.5, 0.98, lr_text, transform=ax.transAxes,
+                fontsize=9, verticalalignment='top', horizontalalignment='center',
+                bbox=dict(boxstyle='round,pad=0.5', facecolor='white', edgecolor='gray', alpha=0.8))
+
+def create_combined_weight_norm_plot(pretrain_ratio=None, plot_derivative=False, normalize_by_lr=False):
+    """
+    Create a 2x2 grid of plots: top row for Adam pretraining, bottom row for Muon pretraining.
+    Each row shows RMS and L∞ norms side by side.
+    
+    Args:
+        pretrain_ratio: pretrain ratio as string (e.g., "0.05", "0.01", "0.00") to plot both muon and adam finetuning (optional)
+        plot_derivative: if True, plot the derivative of the norm instead of the norm itself
+        normalize_by_lr: if True and plot_derivative is True, normalize the derivative by the learning rate
+    """
+    # Create figure with 2x2 subplots
+    # Top row: Adam pretraining (RMS, L∞)
+    # Bottom row: Muon pretraining (RMS, L∞)
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    
+    # Top row: Adam pretraining
+    # Left: RMS norm
+    plot_single_norm(axes[0, 0], "rms", "adam", pretrain_ratio, plot_derivative, normalize_by_lr, setup_axes=True)
+    # Right: L∞ norm
+    plot_single_norm(axes[0, 1], "inf", "adam", pretrain_ratio, plot_derivative, normalize_by_lr, setup_axes=True)
+    
+    # Bottom row: Muon pretraining
+    # Left: RMS norm
+    plot_single_norm(axes[1, 0], "rms", "muon", pretrain_ratio, plot_derivative, normalize_by_lr, setup_axes=True)
+    # Right: L∞ norm
+    plot_single_norm(axes[1, 1], "inf", "muon", pretrain_ratio, plot_derivative, normalize_by_lr, setup_axes=True)
+    
+    # Get handles and labels from one of the axes (they should all have the same legend items)
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    
+    # Deduplicate labels while preserving order and keeping the first handle for each label
+    seen_labels = {}
+    unique_handles = []
+    unique_labels = []
+    for handle, label in zip(handles, labels):
+        if label not in seen_labels:
+            seen_labels[label] = True
+            unique_handles.append(handle)
+            unique_labels.append(label)
+    
+    # Create a single legend on the right side of the figure
+    fig.legend(unique_handles, unique_labels, loc='center right', bbox_to_anchor=(1.0, 0.5), fontsize=10)
+    
+    # Set overall title
     if plot_derivative:
         if normalize_by_lr:
-            ax.set_ylabel(f'd({norm_name} Norm)/dEpoch / LR', fontsize=12)
-            ax.set_title(f'LR-Normalized Derivative of {norm_name} Norm', fontsize=14)
+            title = r'LR-Normalized $\|\Delta\theta\|$ Over Time (Adam & Muon Pretraining)'
         else:
-            ax.set_ylabel(f'd({norm_name} Norm)/dEpoch', fontsize=12)
-            ax.set_title(f'Derivative of {norm_name} Norm', fontsize=14)
+            title = r'$\|\Delta\theta\|$ Over Time (Adam & Muon Pretraining)'
     else:
-        ax.set_ylabel(f'{norm_name} Norm', fontsize=12)
-        ax.set_title(f'{norm_name} Norm', fontsize=14)
+        title = r'$\|\Delta\theta\|$ Over Time (Adam & Muon Pretraining)'
+    if pretrain_ratio:
+        ratio_pct = float(pretrain_ratio) * 100
+        title += f' (Pretrain Ratio {ratio_pct:.0f}%)'
+    fig.suptitle(title, fontsize=16, y=0.995)
     
-    # Set up custom x-axis with "Pretraining" and "Finetuning" labels
-    if pretrain_ratio is not None:
-        # Get the current x-axis limits and find max data point
-        xlim = ax.get_xlim()
-        max_data_x = max(max(muon_epochs_adj), max(adam_epochs_adj))
-        max_x = max(xlim[1], max_data_x)
-        
-        # Create custom ticks and labels
-        # Pretraining section: 0, 15, 30, 45, 60, 75, 90
-        # Finetuning section: 90, 105, 120, 135, 150, 165, 180 (but labeled as 0-90)
-        pretrain_ticks = [0, 15, 30, 45, 60, 75, 90]
-        finetune_ticks = [90, 105, 120, 135, 150, 165, 180]
-        
-        # Only show ticks that are within the actual data range
-        all_ticks = []
-        all_labels = []
-        
-        for tick in pretrain_ticks:
-            if tick <= max_x:
-                all_ticks.append(tick)
-                all_labels.append(str(tick))
-        
-        for tick in finetune_ticks:
-            if tick <= max_x:
-                all_ticks.append(tick)
-                # Label finetuning ticks as 0-90
-                finetune_label = tick - 90
-                all_labels.append(str(finetune_label))
-        
-        ax.set_xticks(all_ticks)
-        ax.set_xticklabels(all_labels)
-        
-        # Add section labels below the x-axis
-        ax.text(45, ax.get_ylim()[0] - (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.08, 
-               'Pretraining', ha='center', va='top', fontsize=11, fontweight='bold')
-        if max_x > 90:
-            finetune_center = 90 + (min(max_x, 180) - 90) / 2
-            ax.text(finetune_center, ax.get_ylim()[0] - (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.08, 
-                   'Finetuning', ha='center', va='top', fontsize=11, fontweight='bold')
-        
-        ax.set_xlabel('Epoch', fontsize=12)
-    else:
-        ax.set_xlabel('Epoch', fontsize=12)
+    # Add row labels
+    fig.text(0.02, 0.75, 'Adam Pretraining', rotation=90, fontsize=12, fontweight='bold', va='center')
+    fig.text(0.02, 0.25, 'Muon Pretraining', rotation=90, fontsize=12, fontweight='bold', va='center')
     
-    # Add grid
-    ax.grid(True, linestyle='--', alpha=0.7)
-    ax.set_axisbelow(True)
+    # Adjust spacing to make room for the legend
+    plt.tight_layout(rect=[0.03, 0, 0.88, 1])
     
-    # Add learning rate annotations
-    lr_text = f"Pretrain LR: {pretrain_lr:.2e}"
-    if pretrain_ratio is not None and muon_finetune_lr is not None and adam_finetune_lr is not None:
-        lr_text += f"\nMuon Finetune LR: {muon_finetune_lr:.2e}"
-        lr_text += f"\nAdam Finetune LR: {adam_finetune_lr:.2e}"
-    
-    # Add text in top center
-    ax.text(0.5, 0.98, lr_text, transform=ax.transAxes,
-            fontsize=9, verticalalignment='top', horizontalalignment='center',
-            bbox=dict(boxstyle='round,pad=0.5', facecolor='white', edgecolor='gray', alpha=0.8))
+    # Save the plot
+    output_file = "metrics/plots/weight_norm_combined"
+    if plot_derivative:
+        output_file += "_derivative"
+        if normalize_by_lr:
+            output_file += "_normalized"
+    if pretrain_ratio:
+        ratio_str = str(float(pretrain_ratio)).replace('.', '_')
+        output_file += f"_ratio_{ratio_str}"
+    output_file += ".png"
+    plt.savefig(output_file, bbox_inches='tight', dpi=150)
+    print(f"Plot saved to {output_file}")
 
 def create_weight_norm_plot(pretrain_opt, pretrain_ratio=None, plot_derivative=False, normalize_by_lr=False):
     """
@@ -430,5 +536,5 @@ def create_weight_norm_plot(pretrain_opt, pretrain_ratio=None, plot_derivative=F
     print(f"Plot saved to {output_file}")
 
 if __name__ == "__main__":
-    create_weight_norm_plot("adam", "0.01", plot_derivative=True, normalize_by_lr=True)
+    create_combined_weight_norm_plot("0.05", plot_derivative=True, normalize_by_lr=True)
 
