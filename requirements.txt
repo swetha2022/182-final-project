@@ -1,0 +1,9 @@
+Pillow>=9.1.1
+torch>=1.12.1
+numpy>=1.23.1
+opencv-python>=4.6.0.66
+torchvision>=0.13.1
+wandb>=0.15.0
+matplotlib>=3.5.0
+tqdm>=4.64.0
+ipywidgets>=8.0.0
