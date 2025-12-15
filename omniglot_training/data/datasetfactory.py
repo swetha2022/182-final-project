@@ -1,0 +1,25 @@
+import torchvision.transforms as transforms
+
+import data.omniglot as om
+
+class DatasetFactory:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def get_dataset(name, train=True, path=None, background=True, increase_channels=False, all=False):
+
+        if name == "omniglot":
+            data_transforms = [transforms.Resize((84, 84)), transforms.ToTensor()]
+            if increase_channels:
+                data_transforms.insert(1, transforms.Grayscale(num_output_channels=3),)
+            train_transform = transforms.Compose(data_transforms)
+            if path is None:
+                return om.Omniglot("../datasets", background=background, download=True, train=train,
+                                   transform=train_transform, all=all)
+            else:
+                return om.Omniglot(path, background=background, download=True, train=train,
+                                   transform=train_transform, all=all)
+        else:
+            print("Unsupported Dataset")
+            assert False
