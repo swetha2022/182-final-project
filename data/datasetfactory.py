@@ -7,12 +7,13 @@ class DatasetFactory:
         pass
 
     @staticmethod
-    def get_dataset(name, train=True, path=None, background=True, all=False):
+    def get_dataset(name, train=True, path=None, background=True, increase_channels=False, all=False):
 
         if name == "omniglot":
-            train_transform = transforms.Compose(
-                [transforms.Resize((84, 84)),
-                 transforms.ToTensor()])
+            data_transforms = [transforms.Resize((84, 84)), transforms.ToTensor()]
+            if increase_channels:
+                data_transforms.insert(1, transforms.Grayscale(num_output_channels=3),)
+            train_transform = transforms.Compose(data_transforms)
             if path is None:
                 return om.Omniglot("../datasets", background=background, download=True, train=train,
                                    transform=train_transform, all=all)
