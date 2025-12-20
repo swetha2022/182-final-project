@@ -4,22 +4,12 @@ finetune_vit_mnist_forgetting.py
 
 Fine-tune torchvision ViT-B/16 (pretrained on ImageNet) on MNIST, evaluate ImageNet before (Apre_pre)
 and after (Apre_post) fine-tuning to measure catastrophic forgetting. Repeat over multiple seeds,
-compute mean ± sd, and plot results.
+compute mean ± sd, and plot results (step-based).
 
 Usage (quick MNIST-only smoke test, skip ImageNet eval):
-    python finetune_vit_mnist_forgetting.py --no-imagenet-eval --seeds 42 7 --epochs 2 --batch-size 128 --output-dir ./out_test
-
-Full run (requires ImageNet val as ImageFolder):
-    python finetune_vit_mnist_forgetting.py \
-      --imagenet-root /path/to/imagenet_root --imagenet-val-dir ILSVRC2012_img_val \
-      --seeds 42 1337 7 --epochs 10 --batch-size 128 --output-dir ./finetune_outputs \
-      --optimizer adamw
-
-Notes:
-- This script ALWAYS uses torchvision pretrained ViT-B/16 as the starting backbone.
-- No custom checkpoint loading logic (keeps initialization simple).
-- Muon optimizer implemented here for convenience (may be slower).
+    python finetune_vit_mnist_forgetting.py --no-imagenet-eval --seeds 42 7 --steps 90 --batch-size 128 --output-dir ./out_test
 """
+
 import argparse
 import os
 import random
@@ -42,13 +32,28 @@ from torchvision.models.vision_transformer import vit_b_16, ViT_B_16_Weights
 # Muon optimizer (simple reimplementation)
 # ----------------------------
 def zeropower_via_newtonschulz5(G, steps=10, eps=1e-7):
-    assert len(G.shape) == 2
+    """
+    Compute matrix 'zero-power' approximation via Newton-Schulz iterations.
+    Accepts 2-D matrices and 1-D vectors. For 1-D inputs, we treat them as
+    (n,1) matrices, run the algorithm, then squeeze back to 1-D.
+    """
+    # remember original shape so we can return same-shaped tensor
+    orig_shape = G.shape
+    was_vector = False
+    if G.ndim == 1:
+        # treat vector as column matrix (n,1)
+        G2 = G.unsqueeze(1)
+        was_vector = True
+    else:
+        G2 = G
+
+    assert G2.ndim == 2, "zeropower_via_newtonschulz5 expects 1D or 2D input"
+
     a, b, c = (3.4445, -4.7750, 2.0315)
-    # work in float for stability
-    X = G.clone().float()
+    X = G2.clone().float()
     X = X / (X.norm() + eps)
     transposed = False
-    if G.size(0) > G.size(1):
+    if X.size(0) > X.size(1):
         X = X.T
         transposed = True
     for _ in range(steps):
@@ -57,7 +62,14 @@ def zeropower_via_newtonschulz5(G, steps=10, eps=1e-7):
         X = a * X + B @ X
     if transposed:
         X = X.T
-    return X.to(G.dtype)
+    X = X.to(G.dtype)
+
+    if was_vector:
+        X = X.squeeze(1)
+        X = X.view(orig_shape)
+
+    return X
+
 
 class Muon(optim.Optimizer):
     def __init__(self, params, lr=0.005, momentum=0.95, nesterov=True, ns_steps=5):
@@ -91,7 +103,6 @@ class Muon(optim.Optimizer):
                 update_matrix = zeropower_via_newtonschulz5(g_use, steps=ns_steps)
                 if g.ndim > 2:
                     update_matrix = update_matrix.view_as(p)
-                # scale a bit to avoid extremely small updates
                 try:
                     scale = max(1.0, p.size(0) / max(1.0, p.size(1))) ** 0.5
                 except Exception:
@@ -108,7 +119,6 @@ def set_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    # deterministic behavior (may slow down training)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
@@ -187,15 +197,11 @@ def run_single_seed(seed, args, device, use_wandb=False):
         imagenet_val_loader = DataLoader(imagenet_val, batch_size=args.batch_size, shuffle=False,
                                          num_workers=args.num_workers, pin_memory=True)
 
-    # --------- Model: ALWAYS use torchvision pretrained ViT-B/16 ----------
+    # Model: pretrained ViT-B/16
     print("Loading torchvision ViT-B/16 pretrained weights (ImageNet).")
     model = vit_b_16(weights=ViT_B_16_Weights.IMAGENET1K_V1)
     model = model.to(device)
-
-    # Keep a copy of the original ImageNet head to use for pre/post evaluations
     head_imagenet = deepcopy(model.heads.head).to(device)
-
-    # Replace head with MNIST head
     feat_dim = model.heads.head.in_features
     head_mnist = nn.Linear(feat_dim, args.mnist_num_classes).to(device)
     model.heads.head = head_mnist
@@ -203,7 +209,7 @@ def run_single_seed(seed, args, device, use_wandb=False):
 
     criterion = nn.CrossEntropyLoss()
 
-    # Evaluate ImageNet baseline BEFORE fine-tuning (Apre_pre)
+    # ImageNet baseline BEFORE fine-tuning
     pre_loss, pre_acc, pre_acc5 = (float('nan'), float('nan'), float('nan'))
     if not args.no_imagenet_eval:
         model.heads.head = head_imagenet
@@ -211,11 +217,10 @@ def run_single_seed(seed, args, device, use_wandb=False):
         pre_loss, pre_acc, pre_acc5 = validate(model, imagenet_val_loader, criterion, device,
                                                 limit_batches=args.imagenet_limit_batches)
         print(f"[seed {seed}] ImageNet baseline acc: {pre_acc:.2f}% (loss {pre_loss:.4f})")
-        # restore MNIST head for fine-tuning
         model.heads.head = head_mnist
         model = model.to(device)
 
-    # --------- Optimizer selection ----------
+    # Optimizer
     opt_name = args.optimizer.lower()
     if opt_name == "adam":
         optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -224,27 +229,47 @@ def run_single_seed(seed, args, device, use_wandb=False):
     elif opt_name == "adamw":
         optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     elif opt_name == "muon":
-        optimizer = Muon(model.parameters(), lr=args.muon_lr, momentum=args.muon_momentum, nesterov=True,
+        optimizer = Muon(model.parameters(), lr=args.muon_lr, momentum=args.momentum, nesterov=True,
                          ns_steps=args.muon_ns_steps)
     else:
         raise ValueError(f"Unsupported optimizer: {args.optimizer}")
 
     scheduler = None
     if args.scheduler:
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.steps)
 
-    # --------- Fine-tune on MNIST ----------
+    # --------- Fine-tune on MNIST (step-based) ----------
     train_losses, train_accs = [], []
     val_losses, val_accs = [], []
+    steps_list = []
     global_step = 0
+    eval_interval = 90 
+    mnist_val_accs_per_interval = []
+    mnist_val_losses_per_interval = []
+    imagenet_val_accs_per_interval = []
+    imagenet_val_losses_per_interval = []
 
-    for epoch in range(args.epochs):
+    while global_step < args.steps:
         model.train()
         running_loss = 0.0
         running_correct = 0
         running_total = 0
-        pbar = tqdm(mnist_train_loader, desc=f"Seed {seed} Train E{epoch+1}/{args.epochs}", leave=False)
+        pbar = tqdm(mnist_train_loader, desc=f"Seed {seed} Training", leave=False)
         for imgs, labels in pbar:
+            if global_step >= args.steps or global_step == 0:
+                val_loss, val_acc, _ = validate(model, mnist_val_loader, criterion, device)
+                mnist_val_accs_per_interval.append((global_step, val_acc))
+                
+                if not args.no_imagenet_eval:
+                    model.heads.head = head_imagenet
+                    model = model.to(device)
+                    _, imagenet_acc, _ = validate(model, imagenet_val_loader, criterion, device,
+                                                limit_batches=args.imagenet_limit_batches)
+                    imagenet_val_accs_per_interval.append((global_step, imagenet_acc))
+                    model.heads.head = head_mnist
+                    model = model.to(device)
+                print(f"[seed {seed}] Step {global_step}/{args.steps} - val_acc {val_acc:.3f}% - MNIST val, ImageNet val {imagenet_acc:.3f}%")
+                break
             imgs = imgs.to(device)
             labels = labels.to(device)
             optimizer.zero_grad()
@@ -257,15 +282,31 @@ def run_single_seed(seed, args, device, use_wandb=False):
             _, preds = torch.max(outputs, 1)
             running_total += labels.size(0)
             running_correct += (preds == labels).sum().item()
-            pbar.set_postfix(loss=running_loss / (len(pbar)), acc=100.0 * running_correct / running_total)
             global_step += 1
+            steps_list.append(global_step)
 
-        train_loss = running_loss / (len(mnist_train_loader))
-        train_acc = 100.0 * running_correct / running_total
-        train_losses.append(train_loss)
-        train_accs.append(train_acc)
+            # --- record per-step loss & accuracy ---
+            train_losses.append(loss.item())
+            train_accs.append(100.0 * running_correct / running_total)
 
-        # validate on MNIST
+            pbar.set_postfix(loss=train_losses[-1],
+                            acc=train_accs[-1])
+            
+            if global_step % eval_interval == 0:
+                val_loss, val_acc, _ = validate(model, mnist_val_loader, criterion, device)
+                mnist_val_accs_per_interval.append((global_step, val_acc))
+                
+                if not args.no_imagenet_eval:
+                    model.heads.head = head_imagenet
+                    model = model.to(device)
+                    _, imagenet_acc, _ = validate(model, imagenet_val_loader, criterion, device,
+                                                limit_batches=args.imagenet_limit_batches)
+                    imagenet_val_accs_per_interval.append((global_step, imagenet_acc))
+                    model.heads.head = head_mnist
+                    model = model.to(device)
+                print(f"[seed {seed}] Step {global_step}/{args.steps} - val_acc {val_acc:.2f}% - MNIST val, ImageNet val {imagenet_acc:.2f}%")
+
+        # Validate **per epoch** (optional, keeps val curves lower-resolution)
         val_loss, val_acc, _ = validate(model, mnist_val_loader, criterion, device)
         val_losses.append(val_loss)
         val_accs.append(val_acc)
@@ -273,9 +314,9 @@ def run_single_seed(seed, args, device, use_wandb=False):
         if scheduler is not None:
             scheduler.step()
 
-        print(f"[seed {seed}] Epoch {epoch+1}/{args.epochs} - train_acc {train_acc:.2f}% - val_acc {val_acc:.2f}%")
+        print(f"[seed {seed}] Step {global_step}/{args.steps} - last_train_acc {train_accs[-1]:.2f}% - val_acc {val_acc:.2f}%")
 
-    # After fine-tuning: evaluate ImageNet head AGAIN (Apre_post)
+    # ImageNet post-finetune
     post_loss, post_acc, post_acc5 = (float('nan'), float('nan'), float('nan'))
     if not args.no_imagenet_eval:
         model.heads.head = head_imagenet
@@ -291,151 +332,101 @@ def run_single_seed(seed, args, device, use_wandb=False):
     np.save(seed_prefix + "_train_accs.npy", np.array(train_accs))
     np.save(seed_prefix + "_val_losses.npy", np.array(val_losses))
     np.save(seed_prefix + "_val_accs.npy", np.array(val_accs))
+    np.save(seed_prefix + "_steps.npy", np.array(steps_list))
 
-    # per-seed plot
+    np.save(seed_prefix + "_mnist_val_accs_interval.npy", np.array(mnist_val_accs_per_interval))
+    np.save(seed_prefix + "_mnist_val_losses_interval.npy", np.array(mnist_val_losses_per_interval))
+    if not args.no_imagenet_eval:
+        np.save(seed_prefix + "_imagenet_val_accs_interval.npy", np.array(imagenet_val_accs_per_interval))
+        np.save(seed_prefix + "_imagenet_val_losses_interval.npy", np.array(imagenet_val_losses_per_interval))
+
+
+    # Plot step-aligned curves
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    axes[0].plot(np.arange(1, len(train_losses)+1), train_losses, marker='o', label='train_loss')
-    axes[0].plot(np.arange(1, len(val_losses)+1), val_losses, marker='o', label='val_loss')
+    axes[0].plot(steps_list[:len(train_losses)], train_losses, marker='o', label='train_loss')
+    axes[0].plot(steps_list[:len(val_losses)], val_losses, marker='o', label='val_loss')
     axes[0].set_title(f"Seed {seed} Losses")
-    axes[0].set_xlabel("Epoch")
+    axes[0].set_xlabel("Training Steps")
     axes[0].set_ylabel("Loss")
     axes[0].legend()
-    axes[1].plot(np.arange(1, len(train_accs)+1), train_accs, marker='o', label='train_acc')
-    axes[1].plot(np.arange(1, len(val_accs)+1), val_accs, marker='o', label='val_acc')
+    axes[1].plot(steps_list[:len(train_accs)], train_accs, marker='o', label='train_acc')
+    axes[1].plot(steps_list[:len(val_accs)], val_accs, marker='o', label='val_acc')
     axes[1].set_title(f"Seed {seed} Accuracies")
-    axes[1].set_xlabel("Epoch")
+    axes[1].set_xlabel("Training Steps")
     axes[1].set_ylabel("Accuracy (%)")
     axes[1].legend()
     fig.tight_layout()
-    fig.savefig(seed_prefix + "_curves.png")
+    fig.savefig(seed_prefix + "_curves_steps.png")
     plt.close(fig)
 
     return {
         'seed': seed,
         'imagenet_pre': {'loss': pre_loss, 'acc': pre_acc, 'acc5': pre_acc5},
         'imagenet_post': {'loss': post_loss, 'acc': post_acc, 'acc5': post_acc5},
-        'mnist_curves': {'train_losses': train_losses, 'train_accs': train_accs, 'val_losses': val_losses, 'val_accs': val_accs}
+        'mnist_curves': {'train_losses': train_losses, 'train_accs': train_accs,
+                         'val_losses': val_losses, 'val_accs': val_accs,
+                         'steps': steps_list}
     }
 
 # ----------------------------
-# Aggregate across seeds and plotting
+# Aggregate plotting
 # ----------------------------
 def aggregate_and_plot(results, args):
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    # ImageNet pre/post
-    pre_accs = []
-    post_accs = []
+    plt.figure(figsize=(8,5))
+    max_steps = max([len(r['mnist_curves']['steps']) for r in results])
+    steps = np.arange(1, max_steps+1)
+    all_train_accs = []
+    all_imagenet_pre_accs = []
+    all_imagenet_post_accs = []
     for r in results:
-        pre = r['imagenet_pre']['acc']
-        post = r['imagenet_post']['acc']
-        if not np.isnan(pre):
-            pre_accs.append(pre)
-        if not np.isnan(post):
-            post_accs.append(post)
+        step_curve = r['mnist_curves']['steps']
+        train_curve = np.interp(steps, step_curve, r['mnist_curves']['train_accs'])
+        all_train_accs.append(train_curve)
+        all_imagenet_pre_accs.append(r['imagenet_pre']['acc'])
+        all_imagenet_post_accs.append(r['imagenet_post']['acc'])
 
-    if len(pre_accs) == 0 or len(post_accs) == 0:
-        print("Missing ImageNet evaluations across seeds; cannot compute catastrophic forgetting metric.")
-    else:
-        pre_arr = np.array(pre_accs)
-        post_arr = np.array(post_accs)
-        errors_pre = 100.0 - pre_arr
-        errors_post = 100.0 - post_arr
-        diffs = errors_pre - errors_post  # Apre_pre - Apre_post (percentage points)
-        mean_diff = np.mean(diffs)
-        sd_diff = np.std(diffs, ddof=1) if len(diffs) > 1 else 0.0
-        print(f"Apre_pre - Apre_post across {len(diffs)} seeds: mean={mean_diff:.4f} pp, sd={sd_diff:.4f} pp")
+    prefix = os.path.join(args.output_dir, f"imagenet")
+    np.save(prefix + "_pre_accs.npy", np.array(all_imagenet_pre_accs))
+    np.save(prefix + "_post_accs.npy", np.array(all_imagenet_post_accs))
 
-        # bar plot
-        fig, ax = plt.subplots(figsize=(6, 5))
-        ax.bar(0, mean_diff, yerr=sd_diff, align='center', capsize=10)
-        ax.set_xticks([0])
-        ax.set_xticklabels([f"Apre_pre - Apre_post\n(n={len(diffs)})"])
-        ax.set_ylabel("Difference in error (percentage points)")
-        ax.set_title("Catastrophic Forgetting: Apre_pre - Apre_post (mean ± sd)")
-        ax.axhline(0, color='black', linewidth=0.8)
-        fig.tight_layout()
-        out_path = os.path.join(args.output_dir, "Apre_pre_minus_Apre_post_mean_sd.png")
-        fig.savefig(out_path)
-        plt.close(fig)
-        print(f"Saved catastrophic forgetting plot to {out_path}")
-
-    # Aggregate MNIST curves across seeds (mean ± sd per epoch)
-    max_epochs = 0
-    for r in results:
-        max_epochs = max(max_epochs, len(r['mnist_curves']['train_accs']))
-    if max_epochs == 0:
-        print("No MNIST curves found to aggregate.")
-        return
-
-    train_acc_mat = np.full((len(results), max_epochs), np.nan)
-    val_acc_mat = np.full((len(results), max_epochs), np.nan)
-    train_loss_mat = np.full((len(results), max_epochs), np.nan)
-    val_loss_mat = np.full((len(results), max_epochs), np.nan)
-
-    for i, r in enumerate(results):
-        ta = r['mnist_curves']['train_accs']
-        va = r['mnist_curves']['val_accs']
-        tl = r['mnist_curves']['train_losses']
-        vl = r['mnist_curves']['val_losses']
-        train_acc_mat[i, :len(ta)] = ta
-        val_acc_mat[i, :len(va)] = va
-        train_loss_mat[i, :len(tl)] = tl
-        val_loss_mat[i, :len(vl)] = vl
-
-    epochs = np.arange(1, max_epochs+1)
-    train_acc_mean = np.nanmean(train_acc_mat, axis=0)
-    train_acc_sd = np.nanstd(train_acc_mat, axis=0, ddof=1)
-    val_acc_mean = np.nanmean(val_acc_mat, axis=0)
-    val_acc_sd = np.nanstd(val_acc_mat, axis=0, ddof=1)
-
-    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
-    ax.plot(epochs, train_acc_mean, label='train_acc_mean', marker='o')
-    ax.fill_between(epochs, train_acc_mean - train_acc_sd, train_acc_mean + train_acc_sd, alpha=0.25)
-    ax.plot(epochs, val_acc_mean, label='val_acc_mean', marker='o')
-    ax.fill_between(epochs, val_acc_mean - val_acc_sd, val_acc_mean + val_acc_sd, alpha=0.25)
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Accuracy (%)")
-    ax.set_title("MNIST Accuracy (mean ± sd across seeds)")
-    ax.legend()
-    fig.tight_layout()
-    out_path = os.path.join(args.output_dir, "mnist_accuracy_mean_sd.png")
-    fig.savefig(out_path)
-    plt.close(fig)
-    print(f"Saved aggregated MNIST accuracy plot to {out_path}")
-
-    # Save raw results
-    save_path = os.path.join(args.output_dir, "all_results.npy")
-    np.save(save_path, results)
-    print(f"Saved raw results to {save_path}")
+    train_mean = np.mean(all_train_accs, axis=0)
+    train_std = np.std(all_train_accs, axis=0)
+    plt.plot(steps, train_mean, label='train_acc')
+    plt.fill_between(steps, train_mean-train_std, train_mean+train_std, alpha=0.2)
+    plt.xlabel("Training Steps")
+    plt.ylabel(f"Training Accuracy with {args.optimizer} (%)")
+    plt.title("MNIST Accuracy Across Seeds")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(args.output_dir, "aggregate_acc_steps.png"))
+    plt.close()
 
 # ----------------------------
 # Argument parser
 # ----------------------------
 def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune ViT on MNIST, evaluate ImageNet pre/post, aggregate over seeds")
-    parser.add_argument("--imagenet-root", type=str, default="/raid/users/celinet/data", help="Root folder for ImageNet data (if doing ImageNet eval).")
-    parser.add_argument("--imagenet-val-dir", type=str, default="ILSVRC2012_img_val", help="ImageNet validation dir name inside imagenet-root.")
-    parser.add_argument("--no-imagenet-eval", action="store_true", help="If set, skip ImageNet pre/post evaluation.")
-    parser.add_argument("--imagenet-limit-batches", type=int, default=None, help="If set, limit ImageNet eval to N batches (for quick runs).")
-    parser.add_argument("--mnist-root", type=str, default="/raid/users/celinet/data", help="MNIST root dir")
-    parser.add_argument("--seeds", nargs="+", type=int, default=[42, 1337, 7], help="Random seeds to run (space-separated)")
-    parser.add_argument("--epochs", type=int, default=10, help="Fine-tune epochs")
-    parser.add_argument("--batch-size", type=int, default=128, help="Batch size")
-    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader num_workers")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--weight-decay", type=float, default=1e-4, help="Weight decay")
-    parser.add_argument("--mnist-num-classes", type=int, default=10, help="MNIST classes")
-    parser.add_argument("--imagenet-num-classes", type=int, default=1000, help="ImageNet classes")
-    parser.add_argument("--output-dir", type=str, default="./finetune_outputs", help="Where to save curves and plots")
-    parser.add_argument("--no-cuda", action="store_true", help="Disable CUDA even if available")
-    parser.add_argument("--scheduler", action="store_true", help="Use CosineAnnealingLR scheduler")
-    parser.add_argument("--optimizer", type=str, default="adamw", help="Optimizer: adam | sgd | adamw | muon")
-    parser.add_argument("--momentum", type=float, default=0.9, help="Momentum for SGD")
-    parser.add_argument("--muon-lr", type=float, default=0.005, help="Muon lr")
-    parser.add_argument("--muon-momentum", type=float, default=0.95, help="Muon momentum")
-    parser.add_argument("--muon-ns-steps", type=int, default=5, help="Muon Newton-Schulz steps")
-    parser.add_argument("--use-wandb", action="store_true", help="Log metrics to wandb if available")
+    parser.add_argument("--imagenet-root", type=str, default="/raid/users/celinet/data")
+    parser.add_argument("--imagenet-val-dir", type=str, default="ILSVRC2012_img_val")
+    parser.add_argument("--no-imagenet-eval", action="store_true")
+    parser.add_argument("--imagenet-limit-batches", type=int, default=None)
+    parser.add_argument("--mnist-root", type=str, default="/raid/users/celinet/data")
+    parser.add_argument("--seeds", nargs="+", type=int, default=[42])
+    parser.add_argument("--steps", type=int, default=90)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--mnist-num-classes", type=int, default=10)
+    parser.add_argument("--imagenet-num-classes", type=int, default=1000)
+    parser.add_argument("--output-dir", type=str, default="./finetune_outputs_muon_test")
+    parser.add_argument("--no-cuda", action="store_true")
+    parser.add_argument("--scheduler", action="store_true")
+    parser.add_argument("--optimizer", type=str, default="muon")
+    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--muon-lr", type=float, default=0.003)
+    parser.add_argument("--muon-ns-steps", type=int, default=3)
+    parser.add_argument("--use-wandb", action="store_true")
     return parser.parse_args()
 
 # ----------------------------
@@ -454,7 +445,6 @@ def main():
             use_wandb = True
         except Exception as e:
             print("Warning: wandb requested but not available:", e)
-            use_wandb = False
 
     results = []
     start_time = time.time()
@@ -462,16 +452,14 @@ def main():
         res = run_single_seed(seed, args, device, use_wandb=use_wandb)
         results.append(res)
         if use_wandb:
-            import wandb
             wandb.log({
                 f"seed_{seed}/imagenet_pre_acc": res['imagenet_pre']['acc'],
-                f"seed_{seed}/imagenet_post_acc": res['imagenet_post']['acc']
+                f"seed_{seed}/imagenet_post_acc": res['imagenet_post']['acc'],
             })
 
-    elapsed = time.time() - start_time
-    print(f"\nAll seeds completed in {elapsed/60.0:.2f} minutes.")
-
     aggregate_and_plot(results, args)
+    elapsed = time.time() - start_time
+    print(f"\nAll seeds done in {elapsed/60:.1f} minutes. Results saved to {args.output_dir}")
 
 if __name__ == "__main__":
     main()
